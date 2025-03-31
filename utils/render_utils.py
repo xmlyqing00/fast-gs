@@ -22,8 +22,34 @@ from PIL import Image
 import mediapy as media
 from matplotlib import cm
 from tqdm import tqdm
+import cv2
 
 import torch
+
+
+def apply_depth_colormap(
+    depth,
+    near_plane = 2.0, far_plane = 4.0,
+    cmap=cv2.COLORMAP_JET,
+):
+    
+    depth = (depth - near_plane) / (far_plane - near_plane + 1e-10)
+    depth = torch.clip(depth, 0, 1)
+    depth = (depth.squeeze().detach().cpu().numpy() * 255).astype(np.uint8)
+    depth_img = cv2.applyColorMap(depth, cmap)
+
+    return depth_img
+
+def tensor2cv(img: torch.tensor, ch_nums: int = 3, permute: bool = True):
+    vis_img = img.detach().cpu().numpy() * 255
+    vis_img = np.clip(vis_img, 0, 255).astype(np.uint8)
+    if ch_nums == 3:
+        if permute:
+            vis_img = vis_img.transpose(1, 2, 0)
+        vis_img = cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR)
+    return vis_img
+
+
 
 def normalize(x: np.ndarray) -> np.ndarray:
   """Normalization helper function."""

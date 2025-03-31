@@ -11,12 +11,13 @@
 
 import torch
 import math
-from diff_surfel_rasterization import GaussianRasterizationSettings, GaussianRasterizer
+from diff_surfel_fast_rasterization import GaussianRasterizationSettings, GaussianRasterizer
+# from diff_surfel_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 from utils.point_utils import depth_to_normal
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, neural_offset = False):
     """
     Render the scene. 
     
@@ -94,45 +95,50 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     else:
         colors_precomp = override_color
     
-    rendered_image, radii, allmap = rasterizer(
+    allmap, radii = rasterizer(
         means3D = means3D,
         means2D = means2D,
-        shs = shs,
         colors_precomp = colors_precomp,
         opacities = opacity,
+        shs=shs,
         scales = scales,
         rotations = rotations,
-        cov3D_precomp = cov3D_precomp
+        cov3D_precomp = cov3D_precomp,
     )
     
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
-    rets =  {"render": rendered_image,
+    rets =  {"render": allmap[:3],
             "viewspace_points": means2D,
             "visibility_filter" : radii > 0,
             "radii": radii,
     }
 
-
     # additional regularizations
-    render_alpha = allmap[1:2]
+    render_alpha = allmap[4:5]
 
     # get normal map
     # transform normal from view space to world space
-    render_normal = allmap[2:5]
+    render_normal = allmap[5:8]
+    # print(f"final normal outside: {render_normal[:, 200, 200]}")
+
     render_normal = (render_normal.permute(1,2,0) @ (viewpoint_camera.world_view_transform[:3,:3].T)).permute(2,0,1)
     
     # get median depth map
-    render_depth_median = allmap[5:6]
+    render_depth_median = allmap[8:9]
     render_depth_median = torch.nan_to_num(render_depth_median, 0, 0)
 
     # get expected depth map
-    render_depth_expected = allmap[0:1]
-    render_depth_expected = (render_depth_expected / render_alpha)
+    render_depth_expected = allmap[3:4]
+    # render_depth_expected = (render_depth_expected / torch.clamp(render_alpha, 1e-6))
+    render_depth_expected = render_depth_expected / render_alpha
     render_depth_expected = torch.nan_to_num(render_depth_expected, 0, 0)
     
     # get depth distortion map
-    render_dist = allmap[6:7]
+    render_dist = allmap[9:10]
+
+    # get the depth dirorder map
+    pixel_depth_disorder = allmap[10:11]
 
     # psedo surface attributes
     # surf depth is either median or expected by setting depth_ratio to 1 or 0
@@ -146,13 +152,13 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     # remember to multiply with accum_alpha since render_normal is unnormalized.
     surf_normal = surf_normal * (render_alpha).detach()
 
-
     rets.update({
             'rend_alpha': render_alpha,
             'rend_normal': render_normal,
             'rend_dist': render_dist,
             'surf_depth': surf_depth,
             'surf_normal': surf_normal,
+            'pixel_depth_disorder': pixel_depth_disorder
     })
 
     return rets

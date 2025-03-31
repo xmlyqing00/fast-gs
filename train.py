@@ -9,6 +9,8 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import cv2
+import numpy as np
 import os
 import torch
 from random import randint
@@ -19,6 +21,7 @@ from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
+from utils.render_utils import tensor2cv, apply_depth_colormap
 from utils.image_utils import psnr, render_net_image
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
@@ -83,10 +86,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
         normal_loss = lambda_normal * (normal_error).mean()
         dist_loss = lambda_dist * (rend_dist).mean()
-
+ 
         # loss
         total_loss = loss + dist_loss + normal_loss
-        
         total_loss.backward()
 
         iter_end.record()
@@ -97,6 +99,41 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ema_dist_for_log = 0.4 * dist_loss.item() + 0.6 * ema_dist_for_log
             ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
 
+            if iteration % 200 == 0: # or (iteration >= 3000 and iteration <= 3500):
+                gt_img = tensor2cv(viewpoint_cam.original_image)
+                render_img = tensor2cv(image)
+                # far_plane = max(5, viewpoint_cam.depth_aggregated.max().item())
+                # near_plane = viewpoint_cam.depth_aggregated.min().item()
+                far_plane = 5
+                near_plane = 0.1
+                depth_corrected = apply_depth_colormap(
+                    render_pkg['surf_depth'].squeeze(), 
+                    near_plane=near_plane, far_plane=far_plane
+                )
+                # sparse_depth = apply_depth_colormap(
+                #     viewpoint_cam.depth_aggregated.squeeze(),
+                #     near_plane=near_plane, far_plane=far_plane
+                # )
+                normal_map = tensor2cv(render_pkg['surf_normal'].squeeze() / 2 + 0.5, permute=True)
+
+                render_diff = viewpoint_cam.original_image - image
+                render_diff = tensor2cv(render_diff.abs() * 5)
+
+                # depth_diff = torch.clamp((render_pkg['surf_depth'].squeeze() - viewpoint_cam.depth_aggregated) * 5 + 0.5, 0, 1) * 255
+                # depth_diff_img = cv2.applyColorMap(depth_diff.detach().cpu().numpy().astype(np.uint8), cv2.COLORMAP_TWILIGHT_SHIFTED)
+
+                empty_img = np.zeros_like(normal_map)
+                pixel_depth_disorder_map = torch.clamp(render_pkg['pixel_depth_disorder'].squeeze(), 0, 255)
+                pixel_depth_disorder_map = cv2.applyColorMap(pixel_depth_disorder_map.detach().cpu().numpy().astype(np.uint8), cv2.COLORMAP_JET)
+
+                render_distortion_map = torch.clamp(rend_dist.squeeze() * 1000, 0, 1)  # H, W
+                render_distortion_map = cv2.applyColorMap((render_distortion_map * 255).detach().cpu().numpy().astype(np.uint8), cv2.COLORMAP_JET)
+
+                row1 = np.concatenate((gt_img, render_img, render_diff, render_distortion_map), axis=1)
+                row2 = np.concatenate((empty_img, depth_corrected, empty_img, normal_map), axis=1)
+                vis_img = np.concatenate((row1, row2), axis=0)
+                vis_img = cv2.resize(vis_img, None, fx=0.5, fy=0.5)
+                cv2.imwrite(os.path.join(scene.model_path, f'vis_{iteration:05d}.png'), vis_img)
 
             if iteration % 10 == 0:
                 loss_dict = {
@@ -108,6 +145,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.set_postfix(loss_dict)
 
                 progress_bar.update(10)
+
             if iteration == opt.iterations:
                 progress_bar.close()
 
@@ -211,31 +249,12 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     render_pkg = renderFunc(viewpoint, scene.gaussians, *renderArgs)
                     image = torch.clamp(render_pkg["render"], 0.0, 1.0).to("cuda")
                     gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
-                    if tb_writer and (idx < 5):
-                        from utils.general_utils import colormap
-                        depth = render_pkg["surf_depth"]
-                        norm = depth.max()
-                        depth = depth / norm
-                        depth = colormap(depth.cpu().numpy()[0], cmap='turbo')
-                        tb_writer.add_images(config['name'] + "_view_{}/depth".format(viewpoint.image_name), depth[None], global_step=iteration)
-                        tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
-
-                        try:
-                            rend_alpha = render_pkg['rend_alpha']
-                            rend_normal = render_pkg["rend_normal"] * 0.5 + 0.5
-                            surf_normal = render_pkg["surf_normal"] * 0.5 + 0.5
-                            tb_writer.add_images(config['name'] + "_view_{}/rend_normal".format(viewpoint.image_name), rend_normal[None], global_step=iteration)
-                            tb_writer.add_images(config['name'] + "_view_{}/surf_normal".format(viewpoint.image_name), surf_normal[None], global_step=iteration)
-                            tb_writer.add_images(config['name'] + "_view_{}/rend_alpha".format(viewpoint.image_name), rend_alpha[None], global_step=iteration)
-
-                            rend_dist = render_pkg["rend_dist"]
-                            rend_dist = colormap(rend_dist.cpu().numpy()[0])
-                            tb_writer.add_images(config['name'] + "_view_{}/rend_dist".format(viewpoint.image_name), rend_dist[None], global_step=iteration)
-                        except:
-                            pass
-
-                        if iteration == testing_iterations[0]:
-                            tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
+                    # if tb_writer and (idx < 5):
+                        # from utils.general_utils import colormap
+                        # depth = render_pkg["surf_depth"]
+                        # norm = depth.max()
+                        # depth = depth / norm
+                        # depth = colormap(depth.cpu().numpy()[0], cmap='turbo')
 
                     l1_test += l1_loss(image, gt_image).mean().double()
                     psnr_test += psnr(image, gt_image).mean().double()
@@ -258,7 +277,7 @@ if __name__ == "__main__":
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 7_000, 8_000, 9_000, 10_000, 12_000, 15_000, 17_000, 20_000, 25_000, 30_000])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
