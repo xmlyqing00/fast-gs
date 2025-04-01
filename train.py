@@ -76,9 +76,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         Ll1 = l1_loss(image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         
+        # matching depth loss
+        depth_loss = ((render_pkg['surf_depth'] - viewpoint_cam.depth_aggregated).abs() * viewpoint_cam.depth_mask_aggregated).mean()
+        if iteration > 1 and iteration % 2000 == 0:
+            opt.lambda_depth *= 0.9
+        if opt.lambda_depth > 0.0:
+            loss += opt.lambda_depth * depth_loss
+
         # regularization
-        lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
-        lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
+        lambda_normal = opt.lambda_normal if iteration > 3000 else 0.0
+        lambda_dist = opt.lambda_dist if iteration > 1000 else 0.0
 
         rend_dist = render_pkg["rend_dist"]
         rend_normal  = render_pkg['rend_normal']
@@ -110,17 +117,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     render_pkg['surf_depth'].squeeze(), 
                     near_plane=near_plane, far_plane=far_plane
                 )
-                # sparse_depth = apply_depth_colormap(
-                #     viewpoint_cam.depth_aggregated.squeeze(),
-                #     near_plane=near_plane, far_plane=far_plane
-                # )
+                sparse_depth = apply_depth_colormap(
+                    viewpoint_cam.depth_aggregated.squeeze(),
+                    near_plane=near_plane, far_plane=far_plane
+                )
                 normal_map = tensor2cv(render_pkg['surf_normal'].squeeze() / 2 + 0.5, permute=True)
 
                 render_diff = viewpoint_cam.original_image - image
                 render_diff = tensor2cv(render_diff.abs() * 5)
 
-                # depth_diff = torch.clamp((render_pkg['surf_depth'].squeeze() - viewpoint_cam.depth_aggregated) * 5 + 0.5, 0, 1) * 255
-                # depth_diff_img = cv2.applyColorMap(depth_diff.detach().cpu().numpy().astype(np.uint8), cv2.COLORMAP_TWILIGHT_SHIFTED)
+                depth_diff = torch.clamp((render_pkg['surf_depth'].squeeze() - viewpoint_cam.depth_aggregated) * 5 + 0.5, 0, 1) * 255
+                depth_diff_img = cv2.applyColorMap(depth_diff.detach().cpu().numpy().astype(np.uint8), cv2.COLORMAP_TWILIGHT_SHIFTED)
 
                 empty_img = np.zeros_like(normal_map)
                 pixel_depth_disorder_map = torch.clamp(render_pkg['pixel_depth_disorder'].squeeze(), 0, 255)
@@ -130,7 +137,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 render_distortion_map = cv2.applyColorMap((render_distortion_map * 255).detach().cpu().numpy().astype(np.uint8), cv2.COLORMAP_JET)
 
                 row1 = np.concatenate((gt_img, render_img, render_diff, render_distortion_map), axis=1)
-                row2 = np.concatenate((empty_img, depth_corrected, empty_img, normal_map), axis=1)
+                row2 = np.concatenate((sparse_depth, depth_corrected, depth_diff_img, normal_map), axis=1)
                 vis_img = np.concatenate((row1, row2), axis=0)
                 vis_img = cv2.resize(vis_img, None, fx=0.5, fy=0.5)
                 cv2.imwrite(os.path.join(scene.model_path, f'vis_{iteration:05d}.png'), vis_img)
@@ -181,29 +188,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
 
-        with torch.no_grad():        
-            if network_gui.conn == None:
-                network_gui.try_connect(dataset.render_items)
-            while network_gui.conn != None:
-                try:
-                    net_image_bytes = None
-                    custom_cam, do_training, keep_alive, scaling_modifer, render_mode = network_gui.receive()
-                    if custom_cam != None:
-                        render_pkg = render(custom_cam, gaussians, pipe, background, scaling_modifer)   
-                        net_image = render_net_image(render_pkg, dataset.render_items, render_mode, custom_cam)
-                        net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
-                    metrics_dict = {
-                        "#": gaussians.get_opacity.shape[0],
-                        "loss": ema_loss_for_log
-                        # Add more metrics as needed
-                    }
-                    # Send the data
-                    network_gui.send(net_image_bytes, dataset.source_path, metrics_dict)
-                    if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
-                        break
-                except Exception as e:
-                    # raise e
-                    network_gui.conn = None
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -278,7 +262,7 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 7_000, 8_000, 9_000, 10_000, 12_000, 15_000, 17_000, 20_000, 25_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[10_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)

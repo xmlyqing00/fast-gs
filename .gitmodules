@@ -7,3 +7,6 @@
 [submodule "submodules/diff-surfel-fast-rasterization"]
 	path = submodules/diff-surfel-fast-rasterization
 	url = git@github.com:xmlyqing00/diff-surfel-neural-rasterization.git
+[submodule "submodules/EfficientLoFTR"]
+	path = submodules/EfficientLoFTR
+	url = git@github.com:xmlyqing00/EfficientLoFTR.git

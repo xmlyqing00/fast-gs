@@ -17,6 +17,8 @@ from scene.dataset_readers import sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
 from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
+from scene.matching import build_neighbors, est_depth
+
 
 class Scene:
 
@@ -29,6 +31,7 @@ class Scene:
         self.model_path = args.model_path
         self.loaded_iter = None
         self.gaussians = gaussians
+        self.source_path = args.source_path
 
         if load_iteration:
             if load_iteration == -1:
@@ -71,6 +74,8 @@ class Scene:
         for resolution_scale in resolution_scales:
             print("Loading Training Cameras")
             self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args)
+            build_neighbors(self.train_cameras[resolution_scale], args)
+            est_depth(self.train_cameras[resolution_scale], args)
             print("Loading Test Cameras")
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
         
