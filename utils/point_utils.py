@@ -5,6 +5,8 @@ import numpy as np
 import os, cv2
 import matplotlib.pyplot as plt
 import math
+from scene.cameras import Camera
+
 
 def depths_to_points(view, depthmap):
     c2w = (view.world_view_transform.T).inverse()
@@ -23,7 +25,8 @@ def depths_to_points(view, depthmap):
     points = depthmap.reshape(-1, 1) * rays_d + rays_o
     return points
 
-def depth_to_normal(view, depth):
+
+def depth_to_normal(view, depth, return_points=False):
     """
         view: view camera
         depth: depthmap 
@@ -34,4 +37,47 @@ def depth_to_normal(view, depth):
     dy = torch.cat([points[1:-1, 2:] - points[1:-1, :-2]], dim=1)
     normal_map = torch.nn.functional.normalize(torch.cross(dx, dy, dim=-1), dim=-1)
     output[1:-1, 1:-1, :] = normal_map
+    
+    if return_points:
+        return output, points
+    else:
+        return output
+    
+
+def depth_to_points_fast(depth, intrins_inv):
+    H, W = depth.shape[1:3]
+    grid_x, grid_y = torch.meshgrid(torch.arange(W), torch.arange(H), indexing='xy')
+    points = torch.stack([grid_x, grid_y, torch.ones_like(grid_x)], dim=-1).reshape(-1, 3).float().cuda()
+    rays_d = points @ intrins_inv
+    points = depth.reshape(-1, 1) * rays_d
+    return points, rays_d
+
+
+def depth_to_normal_pts_fast(depth: torch.Tensor, view: Camera):
+
+    pts_view = depth.reshape(-1, 1) * view.rays_d
+    pts_world = pts_view @ view.world_view_transform_inv[:3, :3] + view.world_view_transform_inv[3, :3]
+
+    pts_world = pts_world.reshape(depth.shape[1], depth.shape[2], 3)
+    output = torch.zeros_like(pts_world)
+    dx = torch.cat([pts_world[2:, 1:-1] - pts_world[:-2, 1:-1]], dim=0)
+    dy = torch.cat([pts_world[1:-1, 2:] - pts_world[1:-1, :-2]], dim=1)
+    normal_map = torch.nn.functional.normalize(torch.cross(dx, dy, dim=-1), dim=-1)
+    output[1:-1, 1:-1, :] = normal_map
+
+    return output, pts_view, pts_world.reshape(-1, 3)
+
+
+def depth_to_normal_fast(depth: torch.Tensor, view: Camera):
+
+    pts_view = depth.reshape(-1, 1) * view.rays_d
+    pts_world = pts_view @ view.world_view_transform_inv[:3, :3] + view.world_view_transform_inv[3, :3]
+
+    pts_world = pts_world.reshape(depth.shape[1], depth.shape[2], 3)
+    output = torch.zeros_like(pts_world)
+    dx = torch.cat([pts_world[2:, 1:-1] - pts_world[:-2, 1:-1]], dim=0)
+    dy = torch.cat([pts_world[1:-1, 2:] - pts_world[1:-1, :-2]], dim=1)
+    normal_map = torch.nn.functional.normalize(torch.cross(dx, dy, dim=-1), dim=-1)
+    output[1:-1, 1:-1, :] = normal_map
+
     return output

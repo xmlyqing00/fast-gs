@@ -37,7 +37,6 @@ class Camera(nn.Module):
         self.nearest_names = []
         self.nearest_matched = []
 
-
         try:
             self.data_device = torch.device(data_device)
         except Exception as e:
@@ -79,8 +78,8 @@ class Camera(nn.Module):
         fx = 1 / (2 * math.tan(self.FoVx / 2.))
         fy = 1 / (2 * math.tan(self.FoVy / 2.))
         self.intrins = torch.tensor(
-            [[fx * self.image_width, 0., 1/2. * self.image_width],
-            [0., fy * self.image_height, 1/2. * self.image_height],
+            [[fx * self.image_width, 0., self.Cx],
+            [0., fy * self.image_height, self.Cy],
             [0., 0., 1.0]],
             device=self.data_device
         ).float().T
@@ -89,11 +88,11 @@ class Camera(nn.Module):
         self.gt_gray_img = self.original_image.mean(0).unsqueeze(0)
 
         grid_x, grid_y = torch.meshgrid(torch.arange(self.image_width), torch.arange(self.image_height), indexing='xy')
-        points = torch.stack([grid_x, grid_y, torch.ones_like(grid_x)], dim=-1).reshape(-1, 3).float().cuda()
+        points = torch.stack([grid_x, grid_y, torch.ones_like(grid_x)], dim=-1).reshape(-1, 3).float().to(self.data_device)
         self.rays_d = points @ self.intrins_inv
         self.rays_d_normalized = normalize(self.rays_d, dim=-1)
-        self.rays_d_world_normalized = self.rays_d_normalized @ self.world_view_transform_inv[:3, :3]
-        self.rays_d_world_normalized = self.rays_d_world_normalized.reshape(self.image_height, self.image_width, 3)
+        # self.rays_d_world_normalized = self.rays_d_normalized @ self.world_view_transform_inv[:3, :3]
+        # self.rays_d_world_normalized = self.rays_d_world_normalized.reshape(self.image_height, self.image_width, 3)
 
     def get_image(self):
         return self.original_image.cuda()

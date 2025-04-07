@@ -18,6 +18,7 @@ from scene.gaussian_model import GaussianModel
 from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
 from scene.matching import build_neighbors, est_depth
+from scene.cameras import Camera
 
 
 class Scene:
