@@ -158,7 +158,8 @@ def render(
         rets.update({
             'pts_world': pts_world,
             'homo_plane_depth': homo_plane_depth,
-            'homo_plane_depth_viz': homo_plane_depth_viz
+            'homo_plane_depth_viz': homo_plane_depth_viz,
+            'surf_normal_view': surf_normal_view
         })
     else:
         surf_normal = depth_to_normal_fast(surf_depth, viewpoint_camera)

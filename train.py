@@ -124,7 +124,7 @@ def loss_in_neighbor_view(
             ref_to_neareast_t = -ref_to_neareast_r @ view_cur.world_view_transform[3,:3] + view_neighbor.world_view_transform[3,:3]
         
         # compute Homography
-        ref_local_n = pts_cur['surf_normal'].reshape(-1, 3)[valid_indices]
+        ref_local_n = pts_cur['surf_normal_view'].reshape(-1, 3)[valid_indices]
         ref_local_d = pts_cur['homo_plane_depth'][valid_indices]
 
         H_ref_to_neareast = ref_to_neareast_r[None] - \
@@ -217,11 +217,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
             viewpoint_stack_visit += 1
-
+            
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
         
         # if iteration % 100 == 0:
-        if iteration >= 1000:
+        if iteration >= opt.multiview_depth_iter:
             viewpoint_neigh_cam = scene.getTrainCameras()[sample(viewpoint_cam.nearest_id,1)[0]]
             render_pkg = render(viewpoint_cam, gaussians, pipe, background, return_pts=True)
             render_pkg_neigh = render(viewpoint_neigh_cam, gaussians, pipe, background, return_pts=True)
@@ -243,7 +243,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             #     render_pkg, render_pkg,
             #     patch_template, pixels, 1.0,
             # )
-            loss = opt.lambda_multiview_geo * loss_dict['geo'] # + opt.lambda_multiview_ncc * loss_dict['color']
+            loss = opt.lambda_multiview_geo * loss_dict['geo'] + opt.lambda_multiview_ncc * loss_dict['color']
             # loss = 0
         
         else:
@@ -251,8 +251,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             loss = 0
             debug_dict = None
             loss_dict = {}
-
-        opt.lambda_depth = 0
 
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         gt_image = viewpoint_cam.original_image.cuda()
@@ -314,7 +312,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 depth_diff = torch.clamp((render_pkg['surf_depth'].squeeze() - viewpoint_cam.depth_aggregated) * 5 + 0.5, 0, 1) * 255
                 depth_diff_img = cv2.applyColorMap(depth_diff.detach().cpu().numpy().astype(np.uint8), cv2.COLORMAP_TWILIGHT_SHIFTED)
 
-                empty_img = np.zeros_like(normal_map)
+                # empty_img = np.zeros_like(normal_map)
                 pixel_depth_disorder_map = torch.clamp(render_pkg['pixel_depth_disorder'].squeeze(), 0, 255)
                 pixel_depth_disorder_map = cv2.applyColorMap(pixel_depth_disorder_map.detach().cpu().numpy().astype(np.uint8), cv2.COLORMAP_JET)
 
@@ -326,21 +324,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
                 if debug_dict is not None:
                     
-                    homo_plane_depth_viz = apply_depth_colormap(
-                        render_pkg['homo_plane_depth_viz'].squeeze(),
-                        near_plane=near_plane, far_plane=far_plane
-                    )
-                    surf_normal_viz = tensor2cv(
-                        render_pkg['surf_normal'].squeeze() / 2 + 0.5, permute=True
-                    )
+                    # homo_plane_depth_viz = apply_depth_colormap(
+                    #     render_pkg['homo_plane_depth_viz'].squeeze(),
+                    #     near_plane=near_plane, far_plane=far_plane
+                    # )
+                    # surf_normal_viz = tensor2cv(
+                    #     render_pkg['surf_normal'].squeeze() / 2 + 0.5, permute=True
+                    # )
                     
                     ncc_map = (debug_dict['ncc_map']*255).detach().cpu().numpy().astype(np.uint8)
                     ncc_map = cv2.applyColorMap(ncc_map, cv2.COLORMAP_JET)
 
                     weights = (debug_dict['weights']*255).detach().cpu().numpy().astype(np.uint8).reshape(H,W)
                     weights_img = cv2.applyColorMap(weights, cv2.COLORMAP_JET)
-                    row1 = np.concatenate(([row1, ncc_map, homo_plane_depth_viz]), axis=1)
-                    row2 = np.concatenate(([row2, weights_img, surf_normal_viz]), axis=1)
+                    row1 = np.concatenate(([row1, ncc_map]), axis=1)
+                    row2 = np.concatenate(([row2, weights_img]), axis=1)
                     
                 vis_img = np.concatenate((row1, row2), axis=0)
                 vis_img = cv2.resize(vis_img, None, fx=0.5, fy=0.5)

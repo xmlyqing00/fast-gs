@@ -94,6 +94,9 @@ class Camera(nn.Module):
         # self.rays_d_world_normalized = self.rays_d_normalized @ self.world_view_transform_inv[:3, :3]
         # self.rays_d_world_normalized = self.rays_d_world_normalized.reshape(self.image_height, self.image_width, 3)
 
+        self.accm_depth = torch.zeros((self.image_height, self.image_width), device=self.data_device)
+        self.accm_depth_conf = torch.zeros((self.image_height, self.image_width), device=self.data_device)
+
     def get_image(self):
         return self.original_image.cuda()
         # if self.preload_img:
