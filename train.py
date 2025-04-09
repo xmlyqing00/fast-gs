@@ -216,9 +216,36 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
-            viewpoint_stack_visit += 1
+            if iteration == opt.multiview_depth_iter:
+                viewpoint_stack_visit = 0
+            elif iteration > opt.multiview_depth_iter:
+                viewpoint_stack_visit += 1
+                if viewpoint_stack_visit > 10:
+                    viewpoint_stack_visit = 1
             
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+        if iteration >= opt.multiview_depth_iter and viewpoint_stack_visit == 10:
+
+            viewpoint_cam.fixed_depth = viewpoint_cam.accm_depth / viewpoint_cam.accm_depth_conf
+            viewpoint_cam.fixed_depth_mask = viewpoint_cam.accm_depth_conf > 5
+
+            far_plane = 5
+            near_plane = 0.1
+
+            depth_corrected = apply_depth_colormap(
+                viewpoint_cam.fixed_depth.squeeze(), 
+                near_plane=near_plane, far_plane=far_plane
+            )
+            accm_depth_conf_vis = (viewpoint_cam.accm_depth_conf / 10 * 255).detach().cpu().numpy().astype(np.uint8)
+            accm_depth_conf_binary_vis = viewpoint_cam.fixed_depth_mask * 255
+            accm_depth_conf_vis = cv2.applyColorMap(accm_depth_conf_vis, cv2.COLORMAP_JET)
+            accm_depth_conf_binary_vis = cv2.applyColorMap(accm_depth_conf_binary_vis.astype(np.uint8), cv2.COLORMAP_JET)
+            vis_img = np.concatenate((depth_corrected, accm_depth_conf_vis, accm_depth_conf_binary_vis), axis=1)
+            vis_img = cv2.resize(vis_img, None, fx=0.5, fy=0.5)
+            cv2.imwrite(os.path.join(scene.model_path, f'vis_accum_depth_{iteration:05d}_{viewpoint_cam.image_name}.png'), vis_img)
+            print('Iter', iteration, 'image', viewpoint_cam.image_name, 'accumulated valid depth', (viewpoint_cam.accm_depth_conf > 5).sum().item())
+            viewpoint_cam.accm_depth_conf = torch.zeros((viewpoint_cam.image_height, viewpoint_cam.image_width), device=viewpoint_cam.data_device)
+            viewpoint_cam.accm_depth = torch.zeros((viewpoint_cam.image_height, viewpoint_cam.image_width), device=viewpoint_cam.data_device)
         
         # if iteration % 100 == 0:
         if iteration >= opt.multiview_depth_iter:
@@ -245,6 +272,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # )
             loss = opt.lambda_multiview_geo * loss_dict['geo'] + opt.lambda_multiview_ncc * loss_dict['color']
             # loss = 0
+
+            depth_valid_mask = debug_dict['weights'].reshape(H, W) > 0.9
+            ncc_valid_mask =  debug_dict['ncc_map'] < 0.1
+            debug_dict.update({
+                'depth_valid_mask': depth_valid_mask,
+                'ncc_valid_mask': ncc_valid_mask
+            })
+
+            valid_mask = depth_valid_mask & ncc_valid_mask
+            viewpoint_cam.accm_depth_conf += valid_mask
+            viewpoint_cam.accm_depth += render_pkg['surf_depth'].squeeze() * valid_mask
         
         else:
             render_pkg = render(viewpoint_cam, gaussians, pipe, background)
@@ -321,6 +359,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
                 row1 = np.concatenate((gt_img, render_img, render_diff, render_distortion_map), axis=1)
                 row2 = np.concatenate((sparse_depth, depth_corrected, depth_diff_img, normal_map), axis=1)
+                vis_img = np.concatenate((row1, row2), axis=0)
 
                 if debug_dict is not None:
                     
@@ -337,10 +376,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
                     weights = (debug_dict['weights']*255).detach().cpu().numpy().astype(np.uint8).reshape(H,W)
                     weights_img = cv2.applyColorMap(weights, cv2.COLORMAP_JET)
-                    row1 = np.concatenate(([row1, ncc_map]), axis=1)
-                    row2 = np.concatenate(([row2, weights_img]), axis=1)
+
+                    depth_valid_mask = (debug_dict['depth_valid_mask']*255).detach().cpu().numpy().astype(np.uint8).reshape(H, W)
+                    depth_valid_mask = cv2.applyColorMap(depth_valid_mask, cv2.COLORMAP_JET)
+                    ncc_valid_mask = (debug_dict['ncc_valid_mask']*255).detach().cpu().numpy().astype(np.uint8)
+                    ncc_valid_mask = cv2.applyColorMap(ncc_valid_mask, cv2.COLORMAP_JET)
+
+                    row3 = np.concatenate([ncc_map, ncc_valid_mask, weights_img, depth_valid_mask], axis=1)
+                    vis_img = np.concatenate((vis_img, row3), axis=0)
                     
-                vis_img = np.concatenate((row1, row2), axis=0)
                 vis_img = cv2.resize(vis_img, None, fx=0.5, fy=0.5)
                 cv2.imwrite(os.path.join(scene.model_path, f'vis_{iteration:05d}.png'), vis_img)
 

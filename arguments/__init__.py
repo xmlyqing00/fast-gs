@@ -98,7 +98,7 @@ class OptimizationParams(ParamGroup):
         self.opacity_cull = 0.05
         self.lambda_multiview_ncc = 0.15
         self.lambda_multiview_geo = 0.03
-        self.multiview_depth_iter = 7_000
+        self.multiview_depth_iter = 4_000
 
         self.densification_interval = 100
         self.opacity_reset_interval = 3_000  # 3_000
