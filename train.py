@@ -40,7 +40,7 @@ def loss_in_neighbor_view(
         pts_cur: dict, pts_neigh: dict,
         patch_template: torch.Tensor,
         pixels: torch.Tensor, pixel_noise_threshold: float,
-        debug: bool = False
+        # debug: bool = False
     ) -> dict:
 
     pts_neighbor_view = pts_cur['pts_world'] @ view_neighbor.world_view_transform[:3, :3] + view_neighbor.world_view_transform[3, :3]
@@ -159,11 +159,11 @@ def loss_in_neighbor_view(
         debug_dict = {
             'cur_patch': pixels_patch,
             'neighbor_patch': grid,
-            'pixel_noise': pixel_noise.reshape(view_cur.image_height, view_cur.image_width),
-            'sampled_depth': sampled_depth.reshape(view_cur.image_height, view_cur.image_width, 1),
+            'pixel_noise': pixel_noise.reshape(view_cur.image_height, view_cur.image_width).detach(),
+            'sampled_depth': sampled_depth.reshape(view_cur.image_height, view_cur.image_width, 1).detach(),
             # 'view_neighbor_depth_diff': diff_depth.reshape(view_cur.image_height, view_cur.image_width, 1),
-            'weights': weights,
-            'ncc_map': ncc_map
+            'weights': weights.detach(),
+            'ncc_map': ncc_map.detach()
         }
         return loss_dict, debug_dict
 
@@ -196,6 +196,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ema_dist_for_log = 0.0
     ema_normal_for_log = 0.0
 
+    visit_time_threshold = 10
+
     offsets_template_7 = patch_offsets(3, 'cuda')
     patch_template = None
 
@@ -220,33 +222,40 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 viewpoint_stack_visit = 0
             elif iteration > opt.multiview_depth_iter:
                 viewpoint_stack_visit += 1
-                if viewpoint_stack_visit > 10:
+                if viewpoint_stack_visit > visit_time_threshold:
                     viewpoint_stack_visit = 1
             
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-        if iteration >= opt.multiview_depth_iter and viewpoint_stack_visit == 10:
+        with torch.no_grad():
+            if iteration >= opt.multiview_depth_iter and viewpoint_stack_visit == visit_time_threshold:
 
-            viewpoint_cam.fixed_depth = viewpoint_cam.accm_depth / viewpoint_cam.accm_depth_conf
-            viewpoint_cam.fixed_depth_mask = viewpoint_cam.accm_depth_conf > 5
+                new_depth = viewpoint_cam.accm_depth / viewpoint_cam.accm_depth_conf
+                new_depth_mask = viewpoint_cam.accm_depth_conf > (visit_time_threshold // 2)
 
-            far_plane = 5
-            near_plane = 0.1
+                if viewpoint_cam.fixed_depth is None:
+                    viewpoint_cam.fixed_depth = new_depth
+                    viewpoint_cam.fixed_depth_mask = new_depth_mask
+                else:
+                    adding_mask = new_depth_mask & ~viewpoint_cam.fixed_depth_mask
+                    viewpoint_cam.fixed_depth[adding_mask] = new_depth[adding_mask]
+                    viewpoint_cam.fixed_depth_mask[adding_mask] = True
 
-            depth_corrected = apply_depth_colormap(
-                viewpoint_cam.fixed_depth.squeeze(), 
-                near_plane=near_plane, far_plane=far_plane
-            )
-            accm_depth_conf_vis = (viewpoint_cam.accm_depth_conf / 10 * 255).detach().cpu().numpy().astype(np.uint8)
-            accm_depth_conf_binary_vis = viewpoint_cam.fixed_depth_mask * 255
-            accm_depth_conf_vis = cv2.applyColorMap(accm_depth_conf_vis, cv2.COLORMAP_JET)
-            accm_depth_conf_binary_vis = cv2.applyColorMap(accm_depth_conf_binary_vis.astype(np.uint8), cv2.COLORMAP_JET)
-            vis_img = np.concatenate((depth_corrected, accm_depth_conf_vis, accm_depth_conf_binary_vis), axis=1)
-            vis_img = cv2.resize(vis_img, None, fx=0.5, fy=0.5)
-            cv2.imwrite(os.path.join(scene.model_path, f'vis_accum_depth_{iteration:05d}_{viewpoint_cam.image_name}.png'), vis_img)
-            print('Iter', iteration, 'image', viewpoint_cam.image_name, 'accumulated valid depth', (viewpoint_cam.accm_depth_conf > 5).sum().item())
-            viewpoint_cam.accm_depth_conf = torch.zeros((viewpoint_cam.image_height, viewpoint_cam.image_width), device=viewpoint_cam.data_device)
-            viewpoint_cam.accm_depth = torch.zeros((viewpoint_cam.image_height, viewpoint_cam.image_width), device=viewpoint_cam.data_device)
-        
+                viz_depth_flag = True
+                if viz_depth_flag:
+                    far_plane = 5
+                    near_plane = 0.1
+
+                    fixed_depth_vis = apply_depth_colormap(viewpoint_cam.fixed_depth.squeeze(), near_plane=near_plane, far_plane=far_plane)
+                    fixed_depth_mask_vis = cv2.applyColorMap((viewpoint_cam.fixed_depth_mask * 255).detach().cpu().numpy().astype(np.uint8), cv2.COLORMAP_JET)
+                    new_depth_vis = apply_depth_colormap(new_depth.squeeze(), near_plane=near_plane, far_plane=far_plane)
+                    new_depth_mask_vis = cv2.applyColorMap((new_depth_mask.detach().cpu().numpy() * 255).astype(np.uint8), cv2.COLORMAP_JET)
+                    vis_img = np.concatenate((fixed_depth_vis, fixed_depth_mask_vis, new_depth_vis, new_depth_mask_vis), axis=1)
+                    vis_img = cv2.resize(vis_img, None, fx=0.5, fy=0.5)
+                    cv2.imwrite(os.path.join(scene.model_path, f'vis_accum_depth_{iteration:05d}_{viewpoint_cam.image_name}.png'), vis_img)
+                    print('Iter', iteration, 'image', viewpoint_cam.image_name, 'accumulated valid depth', (viewpoint_cam.accm_depth_conf > 5).sum().item())
+                viewpoint_cam.accm_depth_conf = torch.zeros((viewpoint_cam.image_height, viewpoint_cam.image_width), device=viewpoint_cam.data_device)
+                viewpoint_cam.accm_depth = torch.zeros((viewpoint_cam.image_height, viewpoint_cam.image_width), device=viewpoint_cam.data_device)
+            
         # if iteration % 100 == 0:
         if iteration >= opt.multiview_depth_iter:
             viewpoint_neigh_cam = scene.getTrainCameras()[sample(viewpoint_cam.nearest_id,1)[0]]
@@ -263,7 +272,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 viewpoint_cam, viewpoint_neigh_cam, 
                 render_pkg, render_pkg_neigh,
                 patch_template, pixels, 1.0,
-                debug=False
+                # debug=False
             )
             # loss_dict, debug_dict = loss_in_neighbor_view(
             #     viewpoint_cam, viewpoint_cam, 
@@ -273,17 +282,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             loss = opt.lambda_multiview_geo * loss_dict['geo'] + opt.lambda_multiview_ncc * loss_dict['color']
             # loss = 0
 
-            depth_valid_mask = debug_dict['weights'].reshape(H, W) > 0.9
-            ncc_valid_mask =  debug_dict['ncc_map'] < 0.1
-            debug_dict.update({
-                'depth_valid_mask': depth_valid_mask,
-                'ncc_valid_mask': ncc_valid_mask
-            })
+            with torch.no_grad():
+                depth_valid_mask = debug_dict['weights'].reshape(H, W) > 0.9
+                ncc_valid_mask =  debug_dict['ncc_map'] < 0.1
+                debug_dict.update({
+                    'depth_valid_mask': depth_valid_mask,
+                    'ncc_valid_mask': ncc_valid_mask
+                })
 
-            valid_mask = depth_valid_mask & ncc_valid_mask
-            viewpoint_cam.accm_depth_conf += valid_mask
-            viewpoint_cam.accm_depth += render_pkg['surf_depth'].squeeze() * valid_mask
-        
+                valid_mask = depth_valid_mask & ncc_valid_mask
+                viewpoint_cam.accm_depth_conf += valid_mask
+                viewpoint_cam.accm_depth += render_pkg['surf_depth'].squeeze() * valid_mask
+            
         else:
             render_pkg = render(viewpoint_cam, gaussians, pipe, background)
             loss = 0

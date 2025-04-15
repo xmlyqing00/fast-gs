@@ -97,7 +97,7 @@ class Camera(nn.Module):
         self.accm_depth = torch.zeros((self.image_height, self.image_width), device=self.data_device)
         self.accm_depth_conf = torch.zeros((self.image_height, self.image_width), device=self.data_device)
         self.fixed_depth = None
-        self.fixed_mask = None
+        self.fixed_depth_mask = None
 
     def get_image(self):
         return self.original_image.cuda()
